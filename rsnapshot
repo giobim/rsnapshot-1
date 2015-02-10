@@ -1,0 +1,385 @@
+#!/bin/bash
+#
+# Copyright (C) 2013 Houtouridis Christos (http://www.houtouridis.net/)
+# 
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+
+# defaults
+#---------------
+MAX_BACKUP_NUMBER=7
+SOURCE_DIR=/
+BACKUP_DIR=/root/Backup/
+ROTATION_STRING=Backup
+
+EXCLUDE_FILE=/etc/rsnapshot.exclude
+LOG_FILE=/var/log/rsnapshot.log
+
+REMOTE_HOST=none
+REMOTE_DIR=none
+RSYNC_USER=root
+
+
+# Internal variables
+# ----------------------
+REMOTE_FULL="$RSYNC_USER@$REMOTE_HOST:$REMOTE_DIR"
+ETC_CONF="/etc/rsnapshot.conf"
+
+RSYNC_LOCAL="rsync -ach --progress --delete -m"
+RSYNC_REMOTE="rsync -achz --progress --delete -m"
+RM="rm -rf"
+MV="mv"
+MKDIR="mkdir -p"
+
+# Usage / help function
+# -----------------------
+usage ()
+{
+cat << EOF
+Usage:   rsnapshot commit [ [-s | --source] SRC_PATH] [ [-d | --dest] DEST_PATH]
+         rsnapshot checkout [  [-s | --source] SRC_PATH] [ [-d | --dest] DEST_PATH]
+         rsnapshot push [ [-r | --remote] REMOTE_HOST]
+         rsnapshot pull [ [-r | --remote] REMOTE_HOST]
+         rsnapshot [-h | --help]
+
+commit:
+        Tries to create and save a snapshot from SRC_PATH to DEST_PATH. The first time a full backup is created. After that rsnapshot tries to use hard links with the previous backups and creates incremental snapshots.
+
+   -s | --source
+      If applied, SRC_PATH is used for source directory. If not the default value SOURCE_DIR from rsnapshot.conf will used.
+
+   -d | --dest
+      If applied, DEST_PATH is used for destination directory. If not, the default value BACKUP_DIR from rsnapshot.conf will used.
+
+checkout:
+   Tries to restore a snapshot from SRC_PATH to DEST_PATH.
+
+   -s | --source
+      If applied, SRC_PATH is used for source directory. This is the directory the rsnapshot reads the data. If not applied, the default value BACKUP_DIR/ROTATION_STRING.1/ from rsnapshot.conf will used.
+
+   -d | --dest
+      If applied, DEST_PATH is used for destination directory. This is the directory the rsnapshot writes the data, If not applied, the default value SOURCE_DIR from rsnapshot.conf will used.
+
+push:
+   Tries to sync the BACKUP_DIR with a remote host. rsnapshot uses ssh for that, so the ssh user and keys must be already configured in the system.
+
+   - r | --remote
+      If applied, REMOTE_HOST is used as destination in the form of USER@HOST:/$REMOTE_DIR. For example
+
+   # rsnapshot push -r bob@alice_pc:/bob_backup
+
+pull:
+   Tries to get the data from remote host to BACKUP_DIR. rsnapshot uses ssh for that, so the ssh user and keys must be already configured in the system.
+
+   -r | --remote
+      If applied, REMOTE_HOST is used as destination in the form of USER@HOST:/$REMOTE_DIR. For example
+
+   # rsnapshot pull -r bob@alice_pc:/bob_backup
+
+   -h or --help
+      Print this and exit.
+EOF
+}
+
+# Log function
+#----------------
+logit ()
+{
+   [ "$1" == "commit" ] && \
+      echo "COMMIT: $(date +'%d-%m-%Y %H:%M') Local snapshot of $SRC created at $DEST succesfully." >> "$LOG_FILE"
+   [ "$1" == "checkout" ] && \
+      echo "CHECKOUT: $(date +'%d-%m-%Y %H:%M') $SRC restored at $DEST succesfully." >> "$LOG_FILE"
+   [ "$1" == "push" ] && \
+      echo "PUSH: $(date +'%d-%m-%Y %H:%M') Remote snapshot from $BACKUP_DIR created at $REMOTE_FULL succesfully" >> "$LOG_FILE"
+   [ "$1" == "pull" ] && \
+      echo "PULL: $(date +'%d-%m-%Y %H:%M') Remote snapshot from $REMOTE_FULL restored at $BACKUP_DIR succesfully" >> "$LOG_FILE"
+   [ "$1" == "error" ] && \
+      echo "ERROR: $2" >> "$LOG_FILE"
+}
+
+
+# Reads a setting value from the conf file
+# ----------------------------------
+get_config ()
+{
+   local str="" #variable for file reading
+   str=$(grep "^MAX_BACKUP_NUMBER" "$ETC_CONF" | cut -d '=' -f 2)
+   if [[ ! -z "$str" && "$str" != "default" ]]; then       MAX_BACKUP_NUMBER=$str; fi
+
+   str=$(grep "^SOURCE_DIR" "$ETC_CONF" | cut -d '=' -f 2)
+   if [[ ! -z "$str" && "$str" != "default" ]]; then       SOURCE_DIR=$str;   fi
+
+   str=$(grep "^BACKUP_DIR" "$ETC_CONF" | cut -d '=' -f 2)
+   if [[ ! -z "$str" && "$str" != "default" ]]; then       BACKUP_DIR=$str;        fi
+
+   str=$(grep "^ROTATION_STRING" "$ETC_CONF" | cut -d '=' -f 2)
+   if [[ ! -z "$str" && "$str" != "default" ]]; then       ROTATION_STRING=$str;   fi
+
+   str=$(grep "^EXCLUDE_FILE" "$ETC_CONF" | cut -d '=' -f 2)
+   if [[ ! -z "$str" && "$str" != "default" ]]; then       EXCLUDE_FILE=$str; fi
+
+   str=$(grep "^LOG_FILE" "$ETC_CONF" | cut -d '=' -f 2)
+   if [[ ! -z "$str" && "$str" != "default" ]]; then       LOG_FILE=$str; fi
+
+   str=$(grep "^REMOTE_HOST" "$ETC_CONF" | cut -d '=' -f 2)
+   if [[ ! -z "$str" && "$str" != "default" ]];    then    REMOTE_HOST=$str ;fi
+
+   str=$(grep "^REMOTE_DIR" "$ETC_CONF" | cut -d '=' -f 2)
+   if [[ ! -z "$str" && "$str" != "default" ]];    then    REMOTE_DIR=$str ;fi
+
+   str=$(grep "^RSYNC_USER" "$ETC_CONF" | cut -d '=' -f 2)
+   if [[ ! -z "$str" && "$str" != "default" ]];    then    RSYNC_USER=$str ;fi
+
+   REMOTE_FULL="$RSYNC_USER@$REMOTE_HOST:$REMOTE_DIR"
+}
+
+
+# Main parameter parser
+# -----------------------------
+par_parser()
+{
+   if [[ "$1" == "" ]]; then usage; exit 1;  fi
+
+   if [[ "$1" == "commit" ]] ; then
+      MODE_COMMIT=1;
+      shift;
+      while [ "$1" != "" ]; do
+         case "$1" in
+            -s | --source )
+               SRC_OVERWRITE=$2
+               shift; shift;;
+            -d | --dest )
+               DEST_OVERWRITE=$2
+               shift ; shift ;;
+            * )
+               usage; exit 1 ;;
+         esac
+      done
+   elif [[ "$1" == "checkout" ]]; then
+      MODE_CHECKOUT=1;
+      shift;
+      while [ "$1" != "" ]; do
+         case "$1" in
+            -s | --source )
+               SRC_OVERWRITE=$2
+               shift; shift;;
+            -d | --dest )
+               DEST_OVERWRITE=$2
+               shift ; shift ;;
+            * )
+               usage; exit 1 ;;
+            esac
+         done
+   elif [[ "$1" == "push" ]]; then
+      MODE_PUSH=1;
+      shift;
+      while [ "$1" != "" ]; do
+         case "$1" in
+            -r | --remote)
+               REMOTE_FULL=$2
+               shift ; shift ;;
+            * )
+               usage; exit 1 ;;
+            esac
+         done
+   elif [[ "$1" == "pull" ]]; then
+      MODE_PULL=1;
+      shift;
+      while [ "$1" != "" ]; do
+         case "$1" in
+            -r | --remote)
+               REMOTE_FULL=$2
+               shift ; shift ;;
+            * )
+               usage; exit 1 ;;
+         esac
+      done
+   elif [[ "$1" == "-h"  || "$1" == "--help" ]]; then
+      usage; exit 0
+   else
+      usage; exit 1
+   fi
+}
+
+
+# initialization routine
+#-------------------------------------
+init ()
+{
+   # root login check
+   if [ "$(id -u)" != "0" ] ; then
+      echo "Shoo! Go try to login as root and come again."
+      exit 1
+   fi
+
+   IFS=$'\n'
+
+   if [ -f "$ETC_CONF" ]
+   then
+      CONF_FILE="$ETC_CONF"
+   else
+      logit "error" "Can't find configuration file \'$ETC_CONF\'."
+      exit 1
+   fi
+
+   # read configuration
+   get_config
+
+   #rest of the files checking
+   [ ! -f "$LOG_FILE" ] &&      touch "$LOG_FILE"
+   [ ! -f "$EXCLUDE_FILE" ] &&  touch "$EXCLUDE_FILE"
+}
+
+
+# Commit mode routine
+#-------------------------
+mode_commit ()
+{
+	# Parameters checking
+	if [[ "$SRC_OVERWRITE" != "" ]]; then
+		SRC=$SRC_OVERWRITE
+	else
+		SRC=$SOURCE_DIR
+	fi
+
+	if [[ "$DEST_OVERWRITE" != "" ]]; then
+		DEST=$DEST_OVERWRITE
+		[ ! -d "$DEST" ] && eval "$MKDIR" "$DEST"
+	else
+		DEST="$BACKUP_DIR$ROTATION_STRING.1/"
+		ROTATE="YES"
+	fi
+
+   # rotate the backups
+	if [[ "$ROTATE" == "YES" ]]; then
+	   cnt=$MAX_BACKUP_NUMBER;
+   	pr_cnt=$((cnt-1));
+   	while [ $cnt -gt 0 ]
+   	do
+      	dir_cnt=$BACKUP_DIR$ROTATION_STRING.$cnt
+      	dir_pr=$BACKUP_DIR$ROTATION_STRING.$pr_cnt
+
+      	if [ $cnt -eq $MAX_BACKUP_NUMBER ] ; then
+         	# delete the oldest
+         	[ -d "$dir_cnt" ] && eval "$RM" "$dir_cnt"
+      	fi
+      	# rotate the others
+      	[ -d "$dir_pr" ] && eval "$MV" "$dir_pr" "$dir_cnt"
+
+      	# update counters
+      	let cnt--;
+      	let pr_cnt--;
+   	done
+   	# Now we dont have a directory for the new snapshot
+   	eval "$MKDIR" "$BACKUP_DIR$ROTATION_STRING.1"
+		LINK_DIR="$BACKUP_DIR$ROTATION_STRING.2"
+	else
+		LINK_DIR="$BACKUP_DIR$ROTATION_STRING.1"
+	fi
+
+   # Do the snapshot
+   if [ -d "$LINK_DIR" ] ; then
+      eval "$RSYNC_LOCAL" "--exclude-from=$EXCLUDE_FILE" "--link-dest=$LINK_DIR" "$SRC" "$DEST"
+      if [  "$?" != "0" ]; then
+         logit error "Snapshot of $SRC to $DEST failed."
+         exit 1
+      else
+         logit commit
+      fi
+   else
+      eval "$RSYNC_LOCAL" "--exclude-from=$EXCLUDE_FILE" "$SRC" "$DEST"
+      if [  "$?" != "0" ]; then
+         logit error "Snapshot of $SRC to $DEST failed."
+         exit 1
+      else
+         logit commit
+      fi
+   fi
+	# update sate/time stamp of the direcotry
+	touch $DEST
+}
+
+# Checkout mode routine
+# --------------------------
+mode_checkout ()
+{
+	# Parameters checking
+	if [[ "$SRC_OVERWRITE" != "" ]]; then
+		SRC=$SRC_OVERWRITE
+	else
+		SRC="$BACKUP_DIR$ROTATION_STRING.1/"
+	fi
+
+	if [[ "$DEST_OVERWRITE" != "" ]]; then
+		DEST=$DEST_OVERWRITE
+		[ ! -d "$DEST" ] && eval "$MKDIR" "$DEST"
+	else
+		DEST=$SOURCE_DIR
+	fi
+
+   eval "$RSYNC_LOCAL" "--exclude-from=$EXCLUDE_FILE" "$SRC" "$DEST"
+   if [  "$?" != "0" ]; then
+      logit error "Restore from $SRC to $DEST failed."
+      exit 1
+   else
+      logit checkout
+   fi
+}
+
+# Push mode routine
+#---------------------------
+mode_push ()
+{
+	eval "$RSYNC_REMOTE" "--exclude-from=$EXCLUDE_FILE" "$BACKUP_DIR" "$REMOTE_FULL"
+   if [  "$?" != "0" ]; then
+      logit error "Push to $REMOTE_FULL failed."
+      exit 1
+   else
+      logit push
+   fi
+}
+
+# Pull mode routine
+# --------------------------
+mode_pull ()
+{
+   [ ! -d "$BACKUP_DIR" ] && eval "$MKDIR" "$BACKUP_DIR"
+	eval "$RSYNC_REMOTE" "--exclude-from=$EXCLUDE_FILE" "$REMOTE_FULL" "$BACKUP_DIR"
+   if [  "$?" != "0" ]; then
+      logit error "Pull from $REMOTE_FULL failed."
+      exit 1
+   else
+      logit pull
+   fi
+}
+
+#-----------------------------------------------------------
+#                   main routine
+trap 'exit 0' SIGINT SIGTERM SIGHUP
+
+init
+par_parser $@
+
+# Local routine
+if [ "$MODE_COMMIT" == "1" ]; then
+   mode_commit
+elif [ "$MODE_CHECKOUT" == "1" ]; then
+   mode_checkout
+elif [ "$MODE_PUSH" == "1" ]; then
+   mode_push
+elif [ "$MODE_PULL" == "1" ]; then
+   mode_pull
+fi
+
+exit 0
