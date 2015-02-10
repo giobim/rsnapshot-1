@@ -96,6 +96,9 @@ The user can apply a backup by
 If we don't have a manually taken backup we can use the last one from the incremental list
  # rsnapshot checkout
 
-If this is not enough user can use one older from the list for ex:
+If this is not enough user can use an older one from the list, for ex:
  # rsnapshot checkout -s /root/Backup/backup.3/
+
+Or even a small part of it, for ex:
+ # rsnapshot checkout -s /root/Backup/backup.3/lala/tata/ -d /lala/tata/
 
