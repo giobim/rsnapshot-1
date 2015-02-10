@@ -1,0 +1,101 @@
+rsnapshot
+=========
+
+rsnapshot is a tool capable of taking incremental rotating backups in a local directory. It also can apply any backup.
+rsnapshot can push/pull a backup to/from a remote location.
+
+
+Installation
+============
+
+For examble in a debian system we make sure we have rsync
+
+ # aptitude install rsync
+
+In order to run the script from root, we put the script in a directory already in PATH. We prefer /usr/local/sbin/
+
+ # mv rsnapshot /usr/local/sbin/rsnapshot
+ # chown root:root /usr/local/sbin/rsnapshot
+ # chmod 700 /usr/local/sbin/rsnapshot
+
+Configuration
+=============
+ 
+rsnapshot can read a configuration file(/etc/rsnapshot.conf) if exist. The format is:
+
+ VAR=VALUE
+ #comment
+
+The user can select:
+MAX_BACKUP_NUMBER
+The maximum number if incremental backup rsnapshot keep in the local directory.
+
+SOURCE_DIR
+The source directory from which rsnapshot takes backup
+
+BACKUP_DIR
+The destination directory in which rsnapshot keeps backups.
+
+EXCLUDE_FILE
+rsnapshot exclude file and directory list. For example
+
+LOG_FILE
+Log file name
+
+RSYNC_USER
+Select the user who runs rsync to the remote location when invoking push/pull.
+The full path is $RSYNC_USER@$REMOTE_HOST:$REMOTE_DIR
+
+REMOTE_HOST
+Select the host for rsync when invoking push/pull.
+The full path is $RSYNC_USER@$REMOTE_HOST:$REMOTE_DIR
+
+REMOTE_DIR
+Select the remote directory in the $REMOTE_HOST.
+The full path is $RSYNC_USER@$REMOTE_HOST:$REMOTE_DIR
+
+ROTATION_STRING
+Select the string.<number> for the incremental backups
+
+An example of configuration file:
+```
+MAX_BACKUP_NUMBER=14
+SOURCE_DIR=/
+BACKUP_DIR=/root/Backup/
+EXCLUDE_FILE=/etc/rsnapshot.exclude
+LOG_FILE=/var/log/rsnapshot.log
+
+RSYNC_USER=root
+REMOTE_HOST=name.host.net
+REMOTE_DIR=/home/mybackup/
+
+ROTATION_STRING=backup
+```
+
+
+Operation
+=========
+
+snapshots and mirroring
+-----------------------
+
+User can run rsnapshot manually  to take a backup before a posible disaster
+ # rsnapshot commit -d /root/Backup/before_the_disaster/
+
+Or can cron it with a configuration file 
+
+ # rsnapshot commit
+ # rsnapshot push
+
+If somethig goes wrong
+----------------------
+
+The user can apply a backup by 
+ # rsnapshot checkout -s /root/Backup/before_the_disaster/
+
+If we don't have a manually taken backup we can use the last one from the incremental list
+ # rsnapshot checkout
+
+If this is not enough user can use one older from the list for ex:
+ # rsnapshot checkout -s /root/Backup/backup.3/
+
